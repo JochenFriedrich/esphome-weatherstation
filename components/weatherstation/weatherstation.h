@@ -39,13 +39,13 @@ class WeatherStationProtocol : public remote_base::RemoteProtocol<WeatherStation
   uint8_t flags_;
 
   enum WeatherStationFlag : uint8_t {
-    TYPE_PWM = 0b00000000,
-    TYPE_PPM = 0b00000001,
+    TYPE_PWM        = 0b00000000,
+    TYPE_PPM        = 0b00000001,
     TYPE_MANCHESTER = 0b00000010,
-    TYPE_DMANCHESTER = 0b00000011,
-    TYPE_MASK = 0b00000011,
-    INVERTED = 0b00000100,
-    REVERSED = 0b00001000,
+    TYPE_DMANCHESTER= 0b00000011,
+    TYPE_MASK       = 0b00000011,
+    INVERTED        = 0b00000100,
+    REVERSED        = 0b00001000,
   };
 
   std::vector<uint8_t> code_;
@@ -68,6 +68,55 @@ class WeatherStationProtocol : public remote_base::RemoteProtocol<WeatherStation
   virtual void setup() = 0;
   virtual bool to_data(WeatherStationData &data) const = 0;
   virtual bool to_code(const WeatherStationData &data) = 0;
+};
+
+// ---------------------------------------------------------------------------
+// WeatherStationHidekiProtocol
+//
+// Decodes the Hideki/Cresta protocol used by Hideki Electronics OEM sensors,
+// sold under brand names: Cresta, Mebus, Irox, Honeywell, RST.
+//
+// Protocol characteristics (from Oopsje's CrestaProtocol.pdf):
+//   - No fixed sync pulse; clock is auto-detected from the first edge.
+//   - Manchester encoded: short edge (~500 µs) = same bit, long edge (~1000 µs) = flip bit.
+//   - 9 bits per byte: 8 data bits + 1 stop bit (always 0).
+//   - First byte must be 0x75 (start/header).
+//   - Bytes are XOR-encrypted: transmitted = encryptByte(plaintext).
+//   - Dual checksums appended after the data bytes.
+//   - Temperature/humidity packet layout:
+//       byte[0] = 0x75 (header)
+//       byte[1] = (channel << 5) | randomId
+//       byte[2] = 0xce (package size byte, encodes length=7)
+//       byte[3] = 0x1e (type: thermo/hygro)
+//       byte[4] = ((temp_tenths / 10) << 4) | (temp_units)
+//       byte[5] = sign_nibble | (temp_hundreds)
+//       byte[6] = ((hum_tens) << 4) | (hum_units)  -- BCD
+//       byte[7] = 0xff (comfort flag)
+//       byte[8] = cs1  (XOR checksum)
+//       byte[9] = cs2  (polynomial checksum)
+// ---------------------------------------------------------------------------
+class WeatherStationHidekiProtocol : public remote_base::RemoteProtocol<WeatherStationData> {
+ public:
+  optional<WeatherStationData> decode(remote_base::RemoteReceiveData src) override;
+  void encode(remote_base::RemoteTransmitData *dst, const WeatherStationData &data) override;
+  void dump(const WeatherStationData &data) override;
+
+  // Maximum number of bytes we will try to decode (header + data + 2 checksums).
+  static constexpr uint8_t MAX_BYTES = 14;
+  // Each byte has 9 bits (8 data + 1 stop); 2 signal edges per bit.
+  static constexpr uint8_t BITS_PER_BYTE = 9;
+  // Clock half-period tolerance: accept durations between 0.5x and 3x the detected clock.
+  static constexpr float CLOCK_TOL_LOW  = 0.5f;
+  static constexpr float CLOCK_TOL_HIGH = 3.0f;
+
+ protected:
+  // Hideki encryption helpers (mirror of SensorTransmitter / SensorReceiver).
+  static uint8_t decrypt_byte_(uint8_t b);
+  static uint8_t second_check_(uint8_t b);
+  bool decrypt_and_check_(uint8_t *buf, uint8_t package_length) const;
+
+  // Decode temperature/humidity payload from the decrypted buffer.
+  bool decode_thermo_hygro_(const uint8_t *buf, WeatherStationData &data) const;
 };
 
 template<typename P, typename... Ts> class WeatherStationAction : public remote_base::RemoteTransmitterActionBase<Ts...> {
@@ -131,5 +180,11 @@ DECLARE_WEATHER_STATION_PROTOCOL(WeatherStationL08037A)
 DECLARE_WEATHER_STATION_PROTOCOL(WeatherStationNexus)
 DECLARE_WEATHER_STATION_PROTOCOL(WeatherStationZ31743)
 DECLARE_WEATHER_STATION_PROTOCOL(WeatherStationZ32171)
+
+// Hideki uses its own base class, so we declare it manually.
+using WeatherStationHidekiBinarySensor = WeatherStationBinarySensor<WeatherStationHidekiProtocol>;
+using WeatherStationHidekiTrigger      = remote_base::RemoteReceiverTrigger<WeatherStationHidekiProtocol>;
+using WeatherStationHidekiDumper       = remote_base::RemoteReceiverDumper<WeatherStationHidekiProtocol>;
+template<typename... Ts> class WeatherStationHidekiAction : public WeatherStationAction<WeatherStationHidekiProtocol, Ts...> {};
 
 }  // namespace esphome::weatherstation

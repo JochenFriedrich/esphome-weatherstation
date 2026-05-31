@@ -186,4 +186,5 @@ register_weatherstation_protocol("L08037A")
 register_weatherstation_protocol("Nexus")
 register_weatherstation_protocol("Z31743")
 register_weatherstation_protocol("Z32171")
+register_weatherstation_protocol("Hideki")
 
